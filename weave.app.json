@@ -1,0 +1,23 @@
+{
+  "app": "github-releases",
+  "name": "GitHub releases",
+  "service": {
+    "reads": "addressed",
+    "writes": ["weave.app", "weave.artifact"],
+    "offers": ["artifact.fetch"],
+    "fetcher": "github-checkout",
+    "sources": ["github"],
+    "expires": {"artifact.fetch": 300},
+    "net": ["api.github.com"],
+    "uses": {"github": {"contents": "read", "metadata": "read"}},
+    "actions": [{"name": "publish", "label": "Publish a release", "who": "maintainers", "input": [{"name": "tag", "label": "Its tag, like v1.0"}]}, {"name": "releases", "label": "See the releases on GitHub", "who": "maintainers"}],
+    "version": "1.0"
+  },
+  "wasm": {"component": "github-releases.wasm"},
+  "env": [
+    {"name": "GITHUB", "label": "GitHub", "oauth": {"device": "https://github.com/login/device/code", "token": "https://github.com/login/oauth/access_token", "client": "Ov23liWKLCViesJn7ICe", "scopes": ["repo"]}, "optional": true, "hint": "Sign in as a maintainer who can read the repository: it reads releases with that access. Public repositories need none"},
+    {"name": "GITHUB_TOKEN", "label": "Or a GitHub token", "secret": true, "optional": true, "hint": "Instead of signing in: a fine-grained token, the release's repositories, Contents read-only"},
+    {"name": "GITHUB_APP_ID", "label": "Or your own GitHub App's ID", "optional": true, "hint": "Installed on the repositories (Contents: read)"},
+    {"name": "GITHUB_APP_KEY", "label": "Its private key (.pem)", "signing": true, "optional": true, "hint": "Weave signs with it for the service; the service never sees it"}
+  ]
+}

@@ -1,0 +1,197 @@
+/// A Weave service as a WebAssembly component: Weave runs it inside itself, in a sandbox, under the service's own
+/// key and with exactly its contract's rights. It needs nothing installed (no Docker), and gets only what Weave hands
+/// it: these functions, a folder of its own (/data), clocks and randomness, and HTTPS (wasi:http) to the hosts its
+/// contract names in "net", none on the node's own networks. No other network, no other files, no processes.
+///
+/// Values that carry Weave's own data (items, bodies, who it is) are JSON, so any language can read and write them.
+package weave:service@0.1.0;
+
+/// What Weave offers the service: who it is, and acting as itself within its contract.
+interface host {
+  /// Who the service is: {name, did, person, contract, spaces: [{id, kind, name, settings, sources}]}. A space's
+  /// sources: where its maintainers' releases come from ([{provider, ref, by}], a GitHub repository say, and who
+  /// published from it): its own code.
+  me: func() -> string;
+  /// A setting its person gave it (sealed on the node that runs it), if there is one.
+  setting: func(name: string) -> option<string>;
+  /// Sign and publish an event in one of its spaces (by id or name), of a kind its contract writes, with a JSON body:
+  /// the new item (JSON), or why not.
+  publish: func(space: string, kind: string, body: string) -> result<string, string>;
+  /// Answer a request addressed to it (text, data as JSON, or an error): the answer (JSON), or why not. Weave seals
+  /// it to who asked (and its own person): the others in the space see that it was answered, not what.
+  answer: func(request: string, text: option<string>, data: option<string>, error: option<string>) -> result<string, string>;
+  /// What it saved under this name in its /data folder (a-z, 0-9, ., _ and -), if anything: for languages without
+  /// file access (JavaScript); others can use /data directly.
+  load: func(name: string) -> option<string>;
+  /// Keep something under this name in its /data folder (what it keeps between runs).
+  save: func(name: string, value: string) -> result<_, string>;
+  /// A line for its log (weave service log).
+  log: func(message: string);
+  /// Every this many milliseconds (at least 1000; 0 stops it), on-event gets {"kind": "weave.tick", "time"}: for work
+  /// nobody asked for (keeping something in step). A tick waits while the last one is still being handled.
+  tick-every: func(ms: u32);
+  /// Sign data with a key among its settings, the key never reaching it: "RS256" (an RSA key, PEM), "ES256" (a P-256
+  /// key, PEM) or "HS256" (any secret). A setting its manifest marks "signing" is only usable this way: setting()
+  /// doesn't return it. The signature (ES256 as r||s, as JWTs have it), or why not.
+  sign: func(setting: string, algorithm: string, data: list<u8>) -> result<list<u8>, string>;
+  /// A release of one of its spaces as Weave knows it (published there by a maintainer), by its id: {id, tag, name,
+  /// manifest} as JSON, or nothing. Only for a service that offers artifact.fetch: it hands those releases' files out,
+  /// and only theirs, whatever a request names.
+  release: func(space: string, id: string) -> option<string>;
+  /// The SHA-256 and size of a file at an HTTPS address (a release file's download address): Weave downloads it to
+  /// fingerprint it, and hands back only {sha256, size} as JSON. Only for a service that offers artifact.fetch, to
+  /// publish what it hands out; never an address on this computer's networks.
+  fingerprint: func(url: string) -> result<string, string>;
+  /// A container image's digest at the first of these tags that exists ({tag, digest} as JSON), read from its public
+  /// registry: to pin a release's image. Only for a service that offers artifact.fetch.
+  pin-image: func(image: string, tags: list<string>) -> result<string, string>;
+  /// Who is in one of its spaces, or reads one of a project's boards: their dids, as JSON.
+  readers: func(space: string, board: option<string>) -> result<string, string>;
+  /// The accounts on a platform (github, x…) people said are theirs in one of its spaces, as its node's verifier finds
+  /// them: [{did, name?, handle, verified?}] as JSON (verified missing: it couldn't tell yet).
+  accounts: func(space: string, platform: string) -> result<string, string>;
+  /// The websites it hosts in one of its projects: [{id, name, host, by?, visitors, open, time}] as JSON. Only for a
+  /// service that hosts websites (websites: host in its contract), as Weave's website service does.
+  websites: func(space: string) -> result<string, string>;
+  /// Close a website it hosts. Opening one is its person's (a port of their computer) or a service's (its own page).
+  close-website: func(id: string) -> result<_, string>;
+  /// Access to a platform through its person's keyvault (uses, in its contract), for one of its spaces and some of
+  /// what its person handed that space there (repositories, say): {token, expires?} as JSON, cut to the rights its
+  /// contract declares. Never through an event, and nothing it wasn't handed: or why not.
+  token: func(platform: string, space: string, resources: list<string>) -> result<string, string>;
+  /// What its person handed one of its spaces in their keyvault for a platform it uses: [resource] as JSON.
+  handed: func(platform: string, space: string) -> result<string, string>;
+}
+
+world service {
+  import host;
+  /// Something it may read arrived, as a feed item (JSON): a request addressed to it (kind weave.service.request,
+  /// body {to, text?, data?}), or what its contract reads. One at a time, in order; also what came while it was off.
+  /// First of all, each time it starts, {"kind": "weave.start", "time"}: for work of its own (tick-every).
+  export on-event: func(item: string);
+}
+
+/// The players of a website it serves: Weave holds their connections, and tells it who each one is.
+interface players {
+  /// Send a message to one player's connection (by its id, from on-join).
+  send: func(player: string, message: string);
+  /// Send a message to every player connected now.
+  broadcast: func(message: string);
+  /// End a player's connection.
+  disconnect: func(player: string);
+  /// Be called (on-tick) every this many milliseconds, at least 50; 0 stops it.
+  tick-every: func(ms: u32);
+}
+
+/// A service with a website: a game, a board, a page with live parts. Weave serves its files (its site folder) and
+/// holds its visitors' connections (WebSockets at /weave/socket): it only handles what they say. The service's
+/// contract says website: true.
+world website {
+  import host;
+  import players;
+  export on-event: func(item: string);
+  /// A player connected: {id, did, name?, host, member, maintainer, room?: {id, name}}, as Weave vouches for them.
+  export on-join: func(player: string);
+  /// A message from a player (by id).
+  export on-message: func(player: string, message: string);
+  /// A player's connection ended.
+  export on-leave: func(player: string);
+  /// Its timer (tick-every).
+  export on-tick: func();
+}
+
+/// What Weave offers a fetcher: its person's settings for it, a log, and where the bytes go.
+interface fetching {
+  /// A setting its person gave it (kept sealed on their node), if there is one.
+  setting: func(name: string) -> option<string>;
+  /// A line for its log.
+  log: func(message: string);
+  /// The next bytes of the file it fetches, in order. Weave checks the whole against the artifact's digest.
+  write: func(bytes: list<u8>) -> result<_, string>;
+}
+
+/// A fetcher: a client app that fetches an artifact for its person, on their node, in the projects they allow. It
+/// gets what a provider granted them (artifact.fetch) and reaches the hosts its manifest names (fetcher.net) over
+/// HTTPS; nothing else. It has no key and answers no requests.
+world fetcher {
+  import fetching;
+  /// Fetch one file: {grant, artifact: {project, id, tag, name}, asset: {file, sha256, size?}}, as JSON. It writes
+  /// the file's bytes (write) and says where they came from, or why it couldn't.
+  export fetch: func(input: string) -> result<string, string>;
+}
+
+/// What Weave offers a verifier: a log.
+interface verifying {
+  /// A line for its log.
+  log: func(message: string);
+}
+
+/// A verifier: a client app that checks whether an account on a platform is a person's, run by whoever looks (no key,
+/// no requests). It reaches the hosts its manifest names (verifier.net) over HTTPS; nothing else.
+world verifier {
+  import verifying;
+  /// Whether a claim holds: {platform, handle, proof, subject (the person's did), text (what the proof must hold)},
+  /// as JSON. True or false; an error when it couldn't tell (the platform didn't answer).
+  export verify: func(claim: string) -> result<bool, string>;
+  /// Make a proof for its person, with a sign-in there they just allowed (used once, then forgotten):
+  /// {platform, token, subject, text}, as JSON. {handle, proof} as JSON, or why not.
+  export prove: func(input: string) -> result<string, string>;
+}
+
+/// What Weave offers a keyvault: its person's settings for it (what's kept of their app), signing with its key, a log.
+interface vaulting {
+  /// A setting of its person's for it: their app as JSON (what's kept of it, never its key), or one they typed.
+  setting: func(name: string) -> option<string>;
+  /// Sign data with the key a setting holds (their app's), the key never reaching it: as the service host's sign.
+  sign: func(setting: string, algorithm: string, data: list<u8>) -> result<list<u8>, string>;
+  /// A line for its log.
+  log: func(message: string);
+}
+
+/// A keyvault: a client app of its person's that holds their access to a platform and hands their services only what's
+/// derived from it. Weave calls it, never a service: what it's asked for already passed Weave's checks (the service is
+/// its person's, declares this use, and asks for what its person handed that project). It reaches the hosts its
+/// manifest names (keyvault.net) over HTTPS; nothing else.
+world keyvault {
+  import vaulting;
+  /// What its access reaches, for its person to hand to projects: [{value, note?}] as JSON.
+  export reachable: func(input: string) -> result<string, string>;
+  /// Access cut to {resources, rights} (JSON): {token, expires?} as JSON, or why not.
+  export mint: func(input: string) -> result<string, string>;
+  /// Other accounts its person may make an app for (organizations of theirs), from {login} (JSON, their own account's
+  /// name there): [{value, note?}] as JSON, or [] when it can't tell. Their own account isn't among them.
+  export owners: func(input: string) -> result<string, string>;
+  /// One of its apps is being forgotten (its setting, as called for it): take it off everything it was given on the
+  /// platform (uninstall it), so its access ends now. Weave can't delete the app itself: its person does, on its page.
+  export forget: func(input: string) -> result<string, string>;
+}
+
+/// A client service: a board's lens, run by every member's own node. Pure: it gets nothing from Weave but what it's
+/// called with (no clock, no randomness, no network), so every member folds the same state from the same events.
+/// It has no key: what its actions propose, the member signs, if their rights in the board allow it. Its site (the
+/// renderer) shows the state in a sandboxed frame and asks for actions; agents get the same state and actions.
+world board {
+  /// The board's state, from the board ({name, title}, JSON) and its items (a JSON array of feed items, oldest first:
+  /// its posts, their edits, deletions and votes, and the messages in their chats). The state is the service's own
+  /// (JSON); Weave reads only its "actions": [{name, label, input?}], what can be done with it.
+  export fold: func(board: string, items: string) -> string;
+  /// What an action proposes: events for the member to sign, as JSON [{kind, body}], or why not. The input is what the
+  /// renderer or agent gave (JSON), the state as fold made it, and me who asks ({did, name}).
+  export act: func(name: string, input: string, state: string, me: string) -> result<string, string>;
+}
+
+/// A mark service: what shows next to names, from an issuer someone chose (docs/v2-stage19.md). Pure like a board's
+/// lens (no clock, randomness, network or key), run by every node that took it in, so the same events give the same
+/// marks. It shows only in its domain: your own (everywhere you look) or a space's (only in that space).
+world marks {
+  /// Take new items into the state, oldest first: the state is the service's own (JSON), none the first time.
+  /// domain: {kind: "user" | "project" | "community", id}; settings: its rules, as its domain set them (JSON).
+  /// items: feed items of the kinds its manifest reads, from public events and its domain; each has "home": true when
+  /// it's in the project the service comes from, by one of its maintainers.
+  export fold: func(domain: string, settings: string, state: option<string>, items: string) -> string;
+  /// Marks for these subjects at this slot, as JSON [{subject, marks: [{kind, text?, count?, symbol?, image?,
+  /// tooltip?, ref?}]}]: kind is check, label (at most 16 characters), count, symbol (an emoji) or image (a wblob:
+  /// reference). Anything else is dropped, and Weave adds who says so.
+  /// slot: {kind, space?}; subjects: [{did} | {space} | {post}]; viewer: {did}.
+  export ask: func(slot: string, subjects: string, state: string, viewer: string) -> string;
+}

@@ -1,0 +1,25 @@
+name: release
+
+# A tag (v1.0) builds the service into a WebAssembly component and attaches it to a GitHub release.
+# Then, in Weave: move its pin (packages/shipped/pinned.json) to the tag and the archive's SHA-256.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run build
+      - run: tar czf weave-github-releases.tar.gz github-releases.wasm weave.app.json README.md
+      - run: gh release create "$GITHUB_REF_NAME" weave-github-releases.tar.gz --title "$GITHUB_REF_NAME" --notes "Built from $GITHUB_SHA"
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -1,0 +1,12 @@
+{
+  "name": "weave-github-releases",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "jco componentize src/service.js --wit wit --world-name service --disable fetch-event -o github-releases.wasm"
+  },
+  "devDependencies": {
+    "@bytecodealliance/componentize-js": "^0.23.0",
+    "@bytecodealliance/jco": "^1.39.0"
+  }
+}
